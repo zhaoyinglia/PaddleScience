@@ -2,6 +2,14 @@
 
 This guide introduces how to build a PINN model for a simple Laplace equation in PaddleScience.
 
+## Distributed allreduce bug reproduce
+
+```
+bash run_auto.sh
+```
+
+
+
 ## Use case introduction
 
 We consider following Laplace equation with Dirichlet bounday condition.
