@@ -23,20 +23,13 @@ from ..labels import LabelInt
 
 class L2(LossBase):
     """
-    L2 loss which is synthesized by three part: the equation loss, the boundary condition loss, and the initial condition loss.
+    L2 loss.
 
     Parameters:
-        pdes(PDE): The partial differential equations used to calculate the equation loss.
-        geo(GeometryDiscrete): The discrete geometry on which the loss is calculated.
-        aux_func(Callable|None): Optional, default None. If is not None, it should be a python function which returns a list of Paddle Tensors. The list is used as right hand side values when calculating the equation loss.
-        eq_weight(float|None): Optional, default None. If is not None, it is multiplied on the equation loss before synthesis.
-        bc_weight(numpy.array|None): Optional, default None. If is not None, it should be a 1-D numpy array which has same number of elements as the bodunary condition points. This numpy array is used as weight when calculating the boundary condition loss.
-        synthesis_method(string): Optional, default 'add'. The method used when synthesizing the three parts of loss. If is 'add', just add three part directly; If is 'norm', synthesize three part by calculationg 2-norm.
-        run_in_batch(bool): Optional, default True. If is True, the equation loss is calculated per batch. If is False, the equation loss is calculated per point.
 
     Example:
         >>> import paddlescience as psci
-        >>> net = psci.loss.L2(pdes=pdes, geo=geo)
+        >>> net = psci.loss.L2()
     """
 
     def __init__(self, p=1):
@@ -44,13 +37,15 @@ class L2(LossBase):
 
     # compute loss on one interior 
     # there are multiple pde
-    def eq_loss(self, pde, net, name_i, input, input_attr, labels, labels_attr,
-                bs):
+    def eq_loss(self, pde, net, input, input_attr, labels, labels_attr, bs):
 
         cmploss = CompFormula(pde, net)
 
         # compute outs, jacobian, hessian
         cmploss.compute_outs_der(input, bs)
+
+        # print(input)
+        # print(cmploss.outs[0:4,:])
 
         loss = 0.0
         for i in range(len(pde.equations)):
@@ -86,12 +81,6 @@ class L2(LossBase):
                     loss += paddle.norm((rst - rhs)**2, p=1)
                 else:
                     loss += paddle.norm((rst - rhs)**2 * wgt, p=1)
-
-            # print("rst: ", rst)
-            # print("rhs: ", rhs)
-            # print("wgt: ", wgt)
-            # print("loss: ", loss)
-            # print("")
 
         return loss, cmploss.outs
 
@@ -138,22 +127,28 @@ class L2(LossBase):
                 else:
                     loss += paddle.norm((rst - rhs)**2 * wgt, p=1)
 
+            # print("rhs: ", rhs)
+            # exit()
+
         return loss, cmploss.outs
 
-    def ic_loss(self, pde, net, name_ic, input, input_attr, labels,
-                labels_attr, bs):
+    def ic_loss(self, pde, net, input, input_attr, labels, labels_attr, bs):
 
         # compute outs
         cmploss = CompFormula(pde, net)
-        rst = cmploss.compute_outs(input, bs)
+        cmploss.compute_outs(input, bs)
 
         loss = 0.0
         for i in range(len(pde.ic)):
             formula = pde.ic[i].formula
             rst = cmploss.compute_formula(formula, input, input_attr, labels,
                                           labels_attr, None)
-            idx = labels_attr["ic"][i]["rhs"]
-            rhs = labels[idx]
+
+            rhs_c = labels_attr["ic"][i]["rhs"]
+            if type(rhs_c) == LabelInt:
+                rhs = labels[rhs_c]
+            else:
+                rhs = rhs_c
             wgt = labels_attr["ic"][i]["weight"]
             loss += paddle.norm((rst - rhs)**2 * wgt, p=1)
 
@@ -168,10 +163,10 @@ class L2(LossBase):
         cmploss.compute_outs(input, bs)
 
         loss = 0.0
-        for i in range(len(pde.dvar_n)):
-            idx = labels_attr["data"][i]
+        for i in range(len(pde.dvar)):
+            idx = labels_attr["data_next"][i]
             data = labels[idx]
-            loss += paddle.norm(cmploss.outs[:, i] - data, p=2)
+            loss += paddle.norm(cmploss.outs[:, i] - data, p=2)**2
             # TODO: p=2 p=1
 
         return loss, cmploss.outs
