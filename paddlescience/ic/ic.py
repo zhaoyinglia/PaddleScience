@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import sympy
+import copy
 
 
 class IC:
@@ -22,7 +23,7 @@ class IC:
     Parameters:
         name (string): Name of dependent variable.
         rhs (float / lambda function): Right-hand side of initial boundary condition. The default value is 0.0.
-        weight (optional, float / lambda function): Weight for computing boundary loss. The default value is 1.0.
+        weight (optional, float / lambda function): Weight for computing initial loss. The default value is 1.0.
 
     Example:
         >>> import paddlescience as psci
