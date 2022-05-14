@@ -509,6 +509,15 @@ def slove_static():
     main_program = compile_and_convert_back_to_program(
         main_program, feed=feeds, fetch_list=fetches, use_prune=True)
     debug_program(main_program, "./compiled_converted_program.txt.")
+
+    # gradient merge
+    # with paddle.static.program_guard(main_program, startup_program):
+    #     k_steps = 16
+    #     parse_program(main_program, startup_program, param_grads, k_steps, False, True)
+    #     main_program._sync_with_cpp()
+    #     debug_program(main_program, "./gm_program.txt.")
+    #     debug_program(startup_program, "./gm_startup_program.txt.")
+
     exe.run(startup_program)
     # num_epoch in train
     train_epoch = 2000
