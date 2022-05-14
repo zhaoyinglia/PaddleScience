@@ -287,7 +287,7 @@ def compute_eq_loss(inputs, outputs, labels_var):
                 1.0 / rho * jac3[:, 2]
 
     rhs = 0
-    wgt = 0.01
+    wgt = np.sqrt(0.01)
 
     eq_loss = l2_norm_square((continuty - rhs)*wgt) + \
             l2_norm_square((momentum_x - rhs)*wgt) + \
@@ -387,7 +387,7 @@ def slove_static():
         fetches.append(var.name)
 
     main_program = compile_and_convert_back_to_program(
-        main_program, feed=feeds, fetch_list=fetches, use_prune=False)
+        main_program, feed=feeds, fetch_list=fetches, use_prune=True)
 
     # num_epoch in train
     train_epoch = 2000
