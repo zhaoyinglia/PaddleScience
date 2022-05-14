@@ -12,20 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
-sys.path.append('/workspace/PaddleScience')
-
 import paddle
-import six
-import time
 import numpy as np
 import paddlescience as psci
-from paddle import fluid
-from paddle.fluid import core
-from paddle.fluid.framework import Variable
-from paddle.static import global_scope
-# Fix here to correct path
-# from paddle.fluid.incubate.ad_transform.primx import prim2orig, enable_prim, prim_enabled
 from paddle.incubate.autograd.primx import prim2orig
 from paddle.incubate.autograd.utils import enable_prim, prim_enabled
 
@@ -35,10 +24,23 @@ np.random.seed(1)
 paddle.enable_static()
 enable_prim()
 
+# define start time and time step
+start_time = 100
+time_step = 1
+
+
+def l2_norm_square(x, scale=None):
+    if scale is None:
+        l2_norm = paddle.norm(x, p=2)
+    else:
+        l2_norm = paddle.norm(x * scale, p=2) / scale
+    return l2_norm * l2_norm
+
 
 # load real data
 def GetRealPhyInfo(time, need_cord=False, need_physic=False):
-    real_data = np.load("/workspace/PaddleScience/examples/cylinder/flow_unsteady_re200/flow_re200_" + str(time) + "_xyzuvwp.npy")
+    real_data = np.load("./flow_unsteady_re200/flow_re200_" + str(time) +
+                        "_xyzuvwp.npy")
     real_data = real_data.astype(np.float32)
     if need_cord is False and need_physic is False:
         print("Error: you need to get cord or get physic infomation")
@@ -52,6 +54,7 @@ def GetRealPhyInfo(time, need_cord=False, need_physic=False):
     else:
         pass
 
+
 # get init physic infomation
 def GenInitPhyInfo(xyz):
     uvw = np.zeros((len(xyz), 3)).astype(np.float32)
@@ -59,11 +62,6 @@ def GenInitPhyInfo(xyz):
         if abs(xyz[i][0] - (-8)) < 1e-4:
             uvw[i][0] = 1.0
     return uvw
-
-
-# define start time and time step
-start_time = 100
-time_step = 1
 
 
 def init_algo():
@@ -77,11 +75,12 @@ def init_algo():
         circle_radius=cr)
 
     geo.add_boundary(name="left", criteria=lambda x, y, z: abs(x + 8.0) < 1e-4)
-    geo.add_boundary(name="right", criteria=lambda x, y, z: abs(x - 25.0) < 1e-4)
+    geo.add_boundary(
+        name="right", criteria=lambda x, y, z: abs(x - 25.0) < 1e-4)
     geo.add_boundary(
         name="circle",
-        criteria=lambda x, y, z: ((x - cc[0])**2 + (y - cc[1])**2 - cr**2) < 1e-4)
-
+        criteria=lambda x, y, z: ((x - cc[0])**2 + (y - cc[1])**2 - cr**2) < 1e-4
+    )
 
     # discretize geometry
     geo_disc = geo.discretize(npoints=40000, method="sampling")
@@ -123,7 +122,11 @@ def init_algo():
 
     # Network
     net = psci.network.FCNet(
-        num_ins=3, num_outs=4, num_layers=10, hidden_size=50, activation='tanh')
+        num_ins=3,
+        num_outs=4,
+        num_layers=10,
+        hidden_size=50,
+        activation='tanh')
 
     # Loss
     loss = psci.loss.L2(p=2)
@@ -134,31 +137,40 @@ def init_algo():
     return algo, pde_disc
 
 
-def compute_eq_loss(input_i, out_i, labels_var):
-    x = input_i[:, 0]
-    y = input_i[:, 1]
-    z = input_i[:, 2]
-    u = out_i[:, 0]
-    v = out_i[:, 1]
-    w = out_i[:, 2]
-    p = out_i[:, 3]
+def compute_eq_loss(inputs, outputs, labels_var):
+    x = inputs[:, 0]
+    y = inputs[:, 1]
+    z = inputs[:, 2]
+    u = outputs[:, 0]
+    v = outputs[:, 1]
+    w = outputs[:, 2]
+    p = outputs[:, 3]
     u_n = labels_var[0]
     v_n = labels_var[1]
     w_n = labels_var[2]
-    jac0, = paddle.static.gradients([u], [input_i]) # du/dx, du/dy, du/dz
-    jac1, = paddle.static.gradients([v], [input_i]) # dv/dx, dv/dy, dv/dz
-    jac2, = paddle.static.gradients([w], [input_i]) # dw/dx, dw/dy, dw/dz
-    jac3, = paddle.static.gradients([p], [input_i]) # dp/dx, dp/dy, dp/dz
-    hes0, = paddle.static.gradients([jac0[:, 0]], [input_i]) # du*du/dx*dx, du*du/dx*dy, du*du/dx*dz
-    hes1, = paddle.static.gradients([jac0[:, 1]], [input_i]) # du*du/dy*dx, du*du/dy*dy, du*du/dy*dz
-    hes2, = paddle.static.gradients([jac0[:, 2]], [input_i]) # du*du/dz*dx, du*du/dz*dy, du*du/dz*dz
-    hes3, = paddle.static.gradients([jac1[:, 0]], [input_i]) # dv*dv/dx*dx, dv*dv/dx*dy, dv*dv/dx*dz
-    hes4, = paddle.static.gradients([jac1[:, 1]], [input_i]) # dv*dv/dy*dx, dv*dv/dy*dy, dv*dv/dy*dz
-    hes5, = paddle.static.gradients([jac1[:, 2]], [input_i]) # dv*dv/dz*dx, dv*dv/dz*dy, dv*dv/dz*dz
-    hes6, = paddle.static.gradients([jac2[:, 0]], [input_i]) # dw*dw/dx*dx, dw*dw/dx*dy, dw*dw/dx*dz
-    hes7, = paddle.static.gradients([jac2[:, 1]], [input_i]) # dw*dw/dy*dx, dw*dw/dy*dy, dw*dw/dy*dz
-    hes8, = paddle.static.gradients([jac2[:, 2]], [input_i]) # dw*dw/dz*dx, dw*dw/dz*dy, dw*dw/dz*dz
-    
+    jac0, = paddle.static.gradients([u], [inputs])  # du/dx, du/dy, du/dz
+    jac1, = paddle.static.gradients([v], [inputs])  # dv/dx, dv/dy, dv/dz
+    jac2, = paddle.static.gradients([w], [inputs])  # dw/dx, dw/dy, dw/dz
+    jac3, = paddle.static.gradients([p], [inputs])  # dp/dx, dp/dy, dp/dz
+    hes0, = paddle.static.gradients(
+        [jac0[:, 0]], [inputs])  # du*du/dx*dx, du*du/dx*dy, du*du/dx*dz
+    hes1, = paddle.static.gradients(
+        [jac0[:, 1]], [inputs])  # du*du/dy*dx, du*du/dy*dy, du*du/dy*dz
+    hes2, = paddle.static.gradients(
+        [jac0[:, 2]], [inputs])  # du*du/dz*dx, du*du/dz*dy, du*du/dz*dz
+    hes3, = paddle.static.gradients(
+        [jac1[:, 0]], [inputs])  # dv*dv/dx*dx, dv*dv/dx*dy, dv*dv/dx*dz
+    hes4, = paddle.static.gradients(
+        [jac1[:, 1]], [inputs])  # dv*dv/dy*dx, dv*dv/dy*dy, dv*dv/dy*dz
+    hes5, = paddle.static.gradients(
+        [jac1[:, 2]], [inputs])  # dv*dv/dz*dx, dv*dv/dz*dy, dv*dv/dz*dz
+    hes6, = paddle.static.gradients(
+        [jac2[:, 0]], [inputs])  # dw*dw/dx*dx, dw*dw/dx*dy, dw*dw/dx*dz
+    hes7, = paddle.static.gradients(
+        [jac2[:, 1]], [inputs])  # dw*dw/dy*dx, dw*dw/dy*dy, dw*dw/dy*dz
+    hes8, = paddle.static.gradients(
+        [jac2[:, 2]], [inputs])  # dw*dw/dz*dx, dw*dw/dz*dy, dw*dw/dz*dz
+
     nu = 0.01
     rho = 1.0
     dt = 1.0
@@ -177,11 +189,12 @@ def compute_eq_loss(input_i, out_i, labels_var):
     rhs = 0
     wgt = 0.01
 
-    eq_loss = paddle.norm((continuty - rhs)*(continuty - rhs)*wgt, p=1) + \
-            paddle.norm((momentum_x - rhs)*(momentum_x - rhs)*wgt, p=1) + \
-            paddle.norm((momentum_y - rhs)*(momentum_y - rhs)*wgt, p=1) + \
-            paddle.norm((momentum_z - rhs)*(momentum_z - rhs)*wgt, p=1)
+    eq_loss = l2_norm_square((continuty - rhs)*wgt) + \
+            l2_norm_square((momentum_x - rhs)*wgt) + \
+            l2_norm_square((momentum_y - rhs)*wgt) + \
+            l2_norm_square((momentum_z - rhs)*wgt)
     return eq_loss
+
 
 def slove_static():
     algo, pde_disc = init_algo()
@@ -193,19 +206,16 @@ def slove_static():
     main_program = paddle.static.Program()
     startup_program = paddle.static.Program()
 
-    with paddle.static.program_guard(main_program,
-                                     startup_program):
+    with paddle.static.program_guard(main_program, startup_program):
         algo.net.make_network_static()
         inputs_var = []
         labels_var = []
         outputs_var = []
-        
+
         # inputs
         for i in range(len(inputs)):
             input = paddle.static.data(
-                name='input' + str(i),
-                shape=inputs[i].shape,
-                dtype='float32')
+                name='input' + str(i), shape=inputs[i].shape, dtype='float32')
             input.stop_gradient = False
             inputs_var.append(input)
 
@@ -217,9 +227,7 @@ def slove_static():
             else:
                 shape = (3415, )
             label = paddle.static.data(
-                name='label' + str(i),
-                shape=shape,
-                dtype='float32')
+                name='label' + str(i), shape=shape, dtype='float32')
             label.stop_gradient = False
             labels_var.append(label)
 
@@ -227,50 +235,42 @@ def slove_static():
             ret = algo.net.nn_func(var)
             outputs_var.append(ret)
 
-
         # bc loss
-        name2index = {
-            'u': 0,
-            'v': 1,
-            'w': 2,
-            'p': 3
-        }
+        name2index = {'u': 0, 'v': 1, 'w': 2, 'p': 3}
         bc_loss = 0.0
         name_list = []
         for i, name_b in enumerate(inputs_attr["bc"].keys()):
             # from outputs_var[1] to outputs_var[3]
-            out_i = outputs_var[i+1]
+            out_el = outputs_var[i + 1]
             for j in range(len(pde_disc.bc[name_b])):
                 rhs_b = labels_attr["bc"][name_b][j]["rhs"]
                 wgt_b = labels_attr["bc"][name_b][j]["weight"]
                 index = name2index.get(pde_disc.bc[name_b][j].name)
-                bc_loss += paddle.norm((out_i[:, index]-rhs_b)*(out_i[:, index]-rhs_b)*wgt_b,  1)
+
+                # NOTE(lml): The new automatic differentiation mechanism splits the norm operator into more detailed operators, and the value range of the data used changes. We manually multiply by 10000 before calculating L2 norm, and then divide by 10000 to avoid the intermediate result from crossing the representation range of float32.
+                bc_loss += l2_norm_square(
+                    (out_el[:, index] - rhs_b) * np.sqrt(wgt_b), 10000)
 
         # inputs_var[0] eq loss
-        input_i = inputs_var[0]
-        out_i = outputs_var[0]
-        output_var_0_eq_loss = compute_eq_loss(input_i, out_i, labels_var[0: 3])
-
+        output_var_0_eq_loss = compute_eq_loss(inputs_var[0], outputs_var[0],
+                                               labels_var[0:3])
 
         # inputs_var[4] eq loss
         input_i = inputs_var[4]
         out_i = outputs_var[4]
-        output_var_4_eq_loss = compute_eq_loss(input_i, out_i, labels_var[7: 10])
+        output_var_4_eq_loss = compute_eq_loss(inputs_var[4], outputs_var[4],
+                                               labels_var[7:10])
         # data_loss
-        label3 = labels_var[3]
-        label4 = labels_var[4]
-        label5 = labels_var[5]
-        label6 = labels_var[6]
-        data_loss = paddle.norm(out_i[:, 0]-label3, p=2)*paddle.norm(out_i[:, 0]-label3, p=2) + \
-                    paddle.norm(out_i[:, 1]-label4, p=2)*paddle.norm(out_i[:, 1]-label4, p=2) + \
-                    paddle.norm(out_i[:, 2]-label5, p=2)*paddle.norm(out_i[:, 2]-label5, p=2) + \
-                    paddle.norm(out_i[:, 3]-label6, p=2)*paddle.norm(out_i[:, 3]-label6, p=2)
-
+        data_loss = l2_norm_square(outputs_var[4][:, 0]-labels_var[3]) + \
+                    l2_norm_square(outputs_var[4][:, 1]-labels_var[4]) + \
+                    l2_norm_square(outputs_var[4][:, 2]-labels_var[5]) + \
+                    l2_norm_square(outputs_var[4][:, 3]-labels_var[6])
 
         # total_loss
-        total_loss = paddle.sqrt(bc_loss+output_var_0_eq_loss+output_var_4_eq_loss+data_loss)
+        total_loss = paddle.sqrt(bc_loss + output_var_0_eq_loss +
+                                 output_var_4_eq_loss + data_loss)
+        paddle.optimizer.Adam(0.001).minimize(total_loss)
 
-        paddle.fluid.optimizer.AdamOptimizer(0.001).minimize(total_loss)
         if prim_enabled():
             prim2orig(main_program.block(0))
 
@@ -287,36 +287,43 @@ def slove_static():
         fetches.append(var.name)
 
     # num_epoch in train
-    train_epoch = 2000
+    train_epoch = 500
 
     # Solver time: (100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
-    num_time_step = 10
-    current_interior = np.zeros((len(pde_disc.geometry.interior), 3)).astype(np.float32)
+    num_time_step = 1
+    current_interior = np.zeros(
+        (len(pde_disc.geometry.interior), 3)).astype(np.float32)
     current_user = GetRealPhyInfo(start_time, need_physic=True)[:, 0:3]
     for i in range(num_time_step):
         next_time = start_time + (i + 1) * time_step
-        print("############# train next time=%f train task ############" % next_time)
-        self_lables = algo.feed_data_interior_cur(labels, labels_attr, current_interior)
-        self_lables = algo.feed_data_user_cur(self_lables, labels_attr, current_user)
-        self_lables = algo.feed_data_user_next(self_lables, labels_attr, GetRealPhyInfo(next_time, need_physic=True))
+        print("############# train next time=%f train task ############" %
+              next_time)
+        self_lables = algo.feed_data_interior_cur(labels, labels_attr,
+                                                  current_interior)
+        self_lables = algo.feed_data_user_cur(self_lables, labels_attr,
+                                              current_user)
+        self_lables = algo.feed_data_user_next(
+            self_lables,
+            labels_attr,
+            GetRealPhyInfo(
+                next_time, need_physic=True))
         for j in range(len(self_lables)):
             feeds['label' + str(j)] = self_lables[j]
-        
+
         for k in range(train_epoch):
-            out = exe.run(main_program,
-                            feed=feeds,
-                            fetch_list=fetches)
+            out = exe.run(main_program, feed=feeds, fetch_list=fetches)
             print("autograd epoch: " + str(k + 1), "    loss:", out[0])
         next_uvwp = out[1:]
         # # Save vtk
         # file_path = "train_flow_unsteady_re200/fac3d_train_rslt_" + str(next_time)
         # psci.visu.save_vtk(filename=file_path, geo_disc=pde_disc.geometry, data=next_uvwp)
-        
+
         # next_info -> current_info
         next_interior = np.array(next_uvwp[0])
         next_user = np.array(next_uvwp[-1])
         current_interior = next_interior[:, 0:3]
         current_user = next_user[:, 0:3]
 
+
 if __name__ == '__main__':
-    slove_static() 
+    slove_static()
