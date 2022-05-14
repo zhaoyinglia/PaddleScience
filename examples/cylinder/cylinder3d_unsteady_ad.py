@@ -13,8 +13,6 @@
 # limitations under the License.
 
 import six
-import os
-import warnings
 import numpy as np
 import paddlescience as psci
 import paddle
@@ -36,11 +34,6 @@ enable_prim()
 start_time = 100
 time_step = 1
 
-def debug_program(main_program, path):
-    gpu_id = int(os.environ.get('FLAGS_selected_gpus', 0))
-    path += str(gpu_id)
-    with open(path, "w+") as f:
-        f.write(str(main_program))
 
 def l2_norm_square(x, scale=None):
     if scale is None:
@@ -191,7 +184,7 @@ def init_algo():
     )
 
     # discretize geometry
-    geo_disc = geo.discretize(npoints=40000, method="sampling")
+    geo_disc = geo.discretize(npoints=80000, method="sampling")
     # the real_cord need to be added in geo_disc
     real_cord = GetRealPhyInfo(start_time, need_cord=True)
     geo_disc.user = real_cord
@@ -331,7 +324,7 @@ def slove_static():
         for i in range(len(labels)):
             # Hard code here for label shape. Shape may change when random seed changed 
             if i in [0, 1, 2]:
-                shape = (37174, )
+                shape = (75570, )
             else:
                 shape = (3415, )
             label = paddle.static.data(
@@ -378,11 +371,9 @@ def slove_static():
         total_loss = paddle.sqrt(bc_loss + output_var_0_eq_loss +
                                  output_var_4_eq_loss + data_loss)
         paddle.optimizer.Adam(0.001).minimize(total_loss)
-        debug_program(main_program, "./prim_program.txt.")
 
         if prim_enabled():
             prim2orig(main_program.block(0))
-            debug_program(main_program, "./orign_program.txt.")
 
     place = paddle.CUDAPlace(0)
     exe = paddle.static.Executor(place)
@@ -397,8 +388,11 @@ def slove_static():
         fetches.append(var.name)
 
     main_program = compile_and_convert_back_to_program(
-        main_program, feed=feeds, fetch_list=fetches, use_prune=True)
-    debug_program(main_program, "./compiled_converted_program.txt.")
+        main_program,
+        feed=feeds,
+        fetch_list=fetches,
+        use_prune=True,
+        loss_name=total_loss.name)
 
     # num_epoch in train
     train_epoch = 2000

@@ -49,6 +49,13 @@ def debug_program(main_program, path):
     with open(path, "w+") as f:
         f.write(str(main_program))
 
+def apply_gradient_merge_pass(main_program, startup_program, k_step = 16, allreduce_in_update = True)
+    with paddle.static.program_guard(main_program, startup_program):
+        parse_program(main_program, startup_program, param_grads, k_steps, False, True)
+        main_program._sync_with_cpp()
+        debug_program(main_program, "./gm_program.txt.")
+        debug_program(startup_program, "./gm_startup_program.txt.")
+
 def set_init_dist_attr(serial_main_prog):
 
     # set init dp attr    
@@ -511,12 +518,7 @@ def slove_static():
     debug_program(main_program, "./compiled_converted_program.txt.")
 
     # gradient merge
-    # with paddle.static.program_guard(main_program, startup_program):
-    #     k_steps = 16
-    #     parse_program(main_program, startup_program, param_grads, k_steps, False, True)
-    #     main_program._sync_with_cpp()
-    #     debug_program(main_program, "./gm_program.txt.")
-    #     debug_program(startup_program, "./gm_startup_program.txt.")
+    apply_gradient_merge_pass(main_program, startup_program, k_step = 16, allreduce_in_update = True)
 
     exe.run(startup_program)
     # num_epoch in train

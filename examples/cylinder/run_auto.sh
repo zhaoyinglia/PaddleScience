@@ -22,4 +22,4 @@ export FLAGS_START_PORT=6687
 python3 -m paddle.distributed.fleet.launch \
     --log_dir ${output_dir} \
     --gpus=${CUDA_VISIBLE_DEVICES} \
-    cylinder3d_unsteady_new_auto_gm.py
+    cylinder3d_unsteady_auto.py
