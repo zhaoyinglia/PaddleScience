@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import paddle
+import six
 import numpy as np
 import paddlescience as psci
+import paddle
+from paddle import fluid
+from paddle.fluid import core
+from paddle.fluid.framework import Variable
+from paddle.static import global_scope
 from paddle.incubate.autograd.primx import prim2orig
 from paddle.incubate.autograd.utils import enable_prim, prim_enabled
 
@@ -62,6 +67,101 @@ def GenInitPhyInfo(xyz):
         if abs(xyz[i][0] - (-8)) < 1e-4:
             uvw[i][0] = 1.0
     return uvw
+
+
+def compile_and_convert_back_to_program(program=None,
+                                        feed=None,
+                                        fetch_list=None,
+                                        fetch_var_name='fetch',
+                                        scope=None,
+                                        use_prune=False,
+                                        loss_name=None):
+    def _add_fetch_ops(program, fetch_list, fetch_var_name):
+        assert isinstance(program, fluid.Program)
+        tmp_program = program.clone()
+        global_block = tmp_program.global_block()
+
+        if fetch_var_name in global_block.vars:
+            fetch_var = global_block.var(fetch_var_name)
+        else:
+            fetch_var = global_block.create_var(
+                name=fetch_var_name,
+                type=core.VarDesc.VarType.FETCH_LIST,
+                persistable=True)
+
+        # append fetch_operators
+        if not fluid.executor.has_fetch_operators(global_block, fetch_list,
+                                                  fetch_var_name, 'fetch'):
+            for i, var in enumerate(fetch_list):
+                assert isinstance(var, Variable) or isinstance(
+                    var, six.string_types), (
+                        "Wrong type for fetch_list[%s]: %s" % (i, type(var)))
+                global_block.append_op(
+                    type='fetch',
+                    inputs={'X': [var]},
+                    outputs={'Out': [fetch_var]},
+                    attrs={'col': i})
+        return tmp_program
+
+    def _remove_fetch_ops(program):
+        assert isinstance(program, fluid.Program)
+        tmp_program = program.clone()
+        global_block = tmp_program.global_block()
+        op_num = len(global_block.ops)
+        for idx in reversed(range(op_num)):
+            if global_block.ops[idx].type == 'fetch':
+                global_block._remove_op(idx)
+
+        return tmp_program
+
+    def _compile(program, loss_name=None):
+        build_strategy = paddle.static.BuildStrategy()
+        exec_strategy = paddle.static.ExecutionStrategy()
+
+        exec_strategy.num_threads = 1
+
+        compiled_program = paddle.static.CompiledProgram(
+            program).with_data_parallel(
+                loss_name=loss_name,
+                build_strategy=build_strategy,
+                exec_strategy=exec_strategy)
+
+        return compiled_program
+
+    if program is None:
+        program = default_main_program()
+
+    if scope is None:
+        scope = global_scope()
+
+    executor = paddle.static.Executor()
+
+    fetch_list = executor._check_fetch_list(fetch_list)
+    fetch_list, optimize_ops = executor._split_optimize_ops_in_fetch_list(
+        fetch_list)
+
+    if optimize_ops:
+        raise ValueError("Unsupport to fetch optimize OP.")
+
+    if use_prune:
+        program = executor._prune_program(program, feed, fetch_list,
+                                          optimize_ops)
+        feed = executor._update_feed(program, feed)
+
+    program_with_fetch_op = _add_fetch_ops(program, fetch_list, fetch_var_name)
+    compiled_program = _compile(program_with_fetch_op, loss_name)
+    assert isinstance(compiled_program, fluid.compiler.CompiledProgram)
+
+    compiled_program._compile(scope,
+                              paddle.framework._current_expected_place())
+    compiled_graph = compiled_program._graph
+    ir_graph = fluid.framework.IrGraph(compiled_graph, for_test=True)
+    #ir_graph.draw(save_path='./', name='compiled_graph')
+    ir_program = ir_graph.to_program()
+    final_program = _remove_fetch_ops(ir_program)
+
+    #paddle.static.save(final_program, "final")
+    return final_program
 
 
 def init_algo():
@@ -286,11 +386,14 @@ def slove_static():
     for var in outputs_var:
         fetches.append(var.name)
 
+    main_program = compile_and_convert_back_to_program(
+        main_program, feed=feeds, fetch_list=fetches, use_prune=False)
+
     # num_epoch in train
-    train_epoch = 500
+    train_epoch = 2000
 
     # Solver time: (100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
-    num_time_step = 1
+    num_time_step = 10
     current_interior = np.zeros(
         (len(pde_disc.geometry.interior), 3)).astype(np.float32)
     current_user = GetRealPhyInfo(start_time, need_physic=True)[:, 0:3]
