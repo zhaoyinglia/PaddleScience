@@ -1,12 +1,12 @@
 
 # export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export CUDA_VISIBLE_DEVICES=4,5,6,7
-export CUDA_VISIBLE_DEVICES=2,3
+export CUDA_VISIBLE_DEVICES=4,5
 export CPU_NUM=10
 export NVIDIA_TF32_OVERRIDE=0
 
 
-output_dir="./output/laplace2d_auto_dp2_gm"
+output_dir="./output/laplace2d_auto_dp2_bug"
 export PYTHONPATH=/work/somecode/Science/final/PaddleScience:$PYTHONPATH
 
 mkdir -p $output_dir

@@ -49,7 +49,7 @@ def debug_program(main_program, path):
     with open(path, "w+") as f:
         f.write(str(main_program))
 
-def apply_gradient_merge_pass(main_program, startup_program, k_step = 16, allreduce_in_update = True)
+def apply_gradient_merge_pass(main_program, startup_program, param_grads, k_step = 16, allreduce_in_update = True):
     with paddle.static.program_guard(main_program, startup_program):
         parse_program(main_program, startup_program, param_grads, k_steps, False, True)
         main_program._sync_with_cpp()
@@ -78,7 +78,7 @@ def init_comm():
 
 def get_dist_prog(serial_main_prog, serial_startup_prog, params_grads):
     print("start auto parallel transform, wait ...")
-    start_time = time.time()
+    start_time_ = time.time()
     set_init_dist_attr(serial_main_prog)
     dist_context = DistributedContext(serial_main_prog, serial_startup_prog)
 
@@ -107,7 +107,7 @@ def get_dist_prog(serial_main_prog, serial_startup_prog, params_grads):
     assert set(dist_context.grads_params.keys()) == dist_context.synced_gradient
 
     init_comm()
-    print("auto parallel transform finish in {} sec.".format(time.time() - start_time))
+    print("auto parallel transform finish in {} sec.".format(time.time() - start_time_))
     return dist_main_prog, dist_startup_prog, dist_params_grads
 
 
@@ -518,11 +518,11 @@ def slove_static():
     debug_program(main_program, "./compiled_converted_program.txt.")
 
     # gradient merge
-    apply_gradient_merge_pass(main_program, startup_program, k_step = 16, allreduce_in_update = True)
+    apply_gradient_merge_pass(main_program, startup_program, param_grads, k_step = 16, allreduce_in_update = True)
 
     exe.run(startup_program)
     # num_epoch in train
-    train_epoch = 2000
+    train_epoch = 150
 
     # Solver time: (100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
     num_time_step = 1
@@ -552,7 +552,13 @@ def slove_static():
             # feeds['label' + str(j)] = self_lables[j]
 
         for k in range(train_epoch):
+            if  k == 49 :
+                start_time = time.time()
+            if k == 149:
+                duration = time.time() - start_time
+                print("avg time from 50 - 150 epoch is {}".format(duration / 100.0))
             out = exe.run(main_program, feed=feeds, fetch_list=fetches)
+            
             print("autograd epoch: " + str(k + 1), "    loss:", out[0])
         next_uvwp = out[1:]
         # # Save vtk
