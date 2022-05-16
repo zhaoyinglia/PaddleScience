@@ -281,21 +281,26 @@ def _create_cond_block_and_update_optimizer(
     layers.cond(cond_var, true_fn=true_apply_gradient, false_fn=None)
 
 
-def parse_program(main_program, startup_program, params_grads, k_steps, avg, allreduce_in_update = False ):
+def parse_program(main_program, startup_program, params_grads, k_steps, avg, allreduce_in_update=False):
     # 1 create gradient_merge_cond
+    print("1 create gradient_merge_cond")
     cond_var = _get_gm_cond_var(main_program, k_steps)
 
     # 2 remove optimizer_op from main_program
+    print("2 remove optimizer_op from main_program")
     optimize_ops_desc = _remove_and_get_optimizer_op(main_program, params_grads, allreduce_in_update)
 
     # back to block 0
+    print("back to block 0")
     main_program._rollback()
 
     # 3 append gradient merge backward op to main_program
+    print("3 append gradient merge")
     new_params_to_grads, param_to_gradient_merge = _append_gradient_merge_backward_op(
         main_program, startup_program, params_grads, cond_var.name)
 
     # 4 create ConditionalBlock and append gradient merge optimizer ops
+    print("4 create ConditionalBlock")
     _create_cond_block_and_update_optimizer(
         main_program, cond_var, new_params_to_grads, param_to_gradient_merge,
         optimize_ops_desc, k_steps, avg, allreduce_in_update)

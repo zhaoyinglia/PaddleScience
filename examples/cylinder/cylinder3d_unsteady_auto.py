@@ -43,18 +43,83 @@ enable_prim()
 start_time = 100
 time_step = 1
 
+# distributed info 
+nranks = paddle.distributed.get_world_size()
+rank = paddle.distributed.get_rank()
+
+# define gradient merge
+msteps = 16
+
+
+def _padding_array(array, n=1):
+    npad = (n - len(array) % n) % n
+    if len(array.shape) > 1:
+        datapad = array[-1, :].reshape((-1, array[-1, :].shape[0]))
+    else:
+        datapad = [array[-1]]
+    for _ in range(npad):
+        array = np.append(array, datapad, axis=0)
+    return array
+
+
+def _padding_length(length, n=1):
+    return length + (n - length % n) % n
+
+
+class cylinderdataset(paddle.io.Dataset):
+    def __init__(self, feed_list):
+        super(cylinderdataset, self).__init__()
+        self.feed_list = feed_list
+
+        self.data = []
+        for feed in feed_list:
+            self.data.append(np.split(_padding_array(feed, msteps), msteps))
+
+        assert len(self.data[0]) == msteps
+        self.num_sample = msteps
+
+    def  __getitem__(self, idx):
+        print(idx)
+        micro_data = []
+        for d in self.data:
+            print(d[idx].shape)
+            micro_data.append(d[idx])
+        # micro_data = [d[idx] for d in self.data]
+        return micro_data
+
+    def __len__(self):
+        return self.num_sample
+
+
+class DataSetStatic:
+    def __init__(self, nsamples, inputs_labels):
+        self.inputs = inputs_labels
+        self.nsamples = nsamples
+
+    def __getitem__(self, idx):
+        return self.inputs
+
+    def __len__(self):
+        return self.nsamples
+
+
 def debug_program(main_program, path):
     gpu_id = int(os.environ.get('FLAGS_selected_gpus', 0))
     path += str(gpu_id)
     with open(path, "w+") as f:
         f.write(str(main_program))
 
-def apply_gradient_merge_pass(main_program, startup_program, param_grads, k_step = 16, allreduce_in_update = True):
+
+def apply_gradient_merge_pass(main_program, startup_program, param_grads, k_step=16, allreduce_in_update=True):
     with paddle.static.program_guard(main_program, startup_program):
-        parse_program(main_program, startup_program, param_grads, k_steps, False, True)
+        if nranks > 1:
+            parse_program(main_program, startup_program, param_grads, k_step, False, True)
+        else:
+            parse_program(main_program, startup_program, param_grads, k_step, False, False)
         main_program._sync_with_cpp()
-        debug_program(main_program, "./gm_program.txt.")
-        debug_program(startup_program, "./gm_startup_program.txt.")
+        # debug_program(main_program, "./gm_program.txt.")
+        # debug_program(startup_program, "./gm_startup_program.txt.")
+
 
 def set_init_dist_attr(serial_main_prog):
 
@@ -67,6 +132,7 @@ def set_init_dist_attr(serial_main_prog):
     tensor_dist_attr = set_var_dist_attr(default_dist_context, x_tensor, [-1, -1], _global_process_mesh, mark_annotated=True)
     tensor_dist_attr = set_var_dist_attr(default_dist_context, bc_idx_tensor, [-1], _global_process_mesh, mark_annotated=True)
 
+
 def init_comm():
     from paddle.distributed.auto_parallel.process_group import get_all_process_groups
     all_process_groups = get_all_process_groups()
@@ -75,6 +141,7 @@ def init_comm():
         if rank not in process_group.ranks:
             continue
         process_group.instantiate()
+
 
 def get_dist_prog(serial_main_prog, serial_startup_prog, params_grads):
     print("start auto parallel transform, wait ...")
@@ -260,10 +327,10 @@ def init_algo():
     )
 
     # discretize geometry
-    geo_disc = geo.discretize(npoints=40000, method="sampling")
+    geo_disc = geo.discretize(npoints=200000, method="sampling")
     # the real_cord need to be added in geo_disc
     real_cord = GetRealPhyInfo(start_time, need_cord=True)
-    geo_disc.user = real_cord
+    geo_disc.user = _padding_array(real_cord, nranks)
 
     # N-S equation
     pde = psci.pde.NavierStokes(
@@ -380,15 +447,17 @@ def slove_static():
     inputs, inputs_attr = algo.create_inputs(pde_disc)
     labels, labels_attr = algo.create_labels(pde_disc)
 
-    # distributed info 
-    nranks = paddle.distributed.get_world_size()
-    rank = paddle.distributed.get_rank()
+    for data in inputs:
+        print(data.shape)
+    print("+++++++++++++++++++++++++++")
 
-        # （lbsz, start_offset, end_offset(not include)）
+    # （lbsz, start_offset, end_offset(not include)）
     input_partition_meta = []
     for i in range(len(inputs)):
-        gbsz = inputs[i].shape[0]
-        lbsz = gbsz // nranks
+        lbsz = _padding_length(inputs[i].shape[0] // nranks, msteps) // msteps
+        gbsz = lbsz * nranks * msteps
+        print("gbsz:", gbsz)
+        print("lbsz:", lbsz)
         # last rank would contain more data
         start_idx = rank * lbsz
         end_idx = (rank + 1) * lbsz
@@ -396,10 +465,15 @@ def slove_static():
             lbsz += gbsz % nranks
             end_idx += gbsz % nranks
         input_partition_meta.append((lbsz, start_idx, end_idx))
-    
+
+    # npoints
+    shape0 = [_padding_length(_padding_length(inputs[0].shape[0], nranks) // nranks , msteps) * nranks]
+    shape1 = [_padding_length(_padding_length(3415, nranks) // nranks, msteps) * nranks]
+    print(shape0 * 3 + shape1 * 7)
+
     label_partition_meta = []
-    for gbsz in [37174, 37174, 37174, 3415, 3415, 3415, 3415,3415, 3415, 3415]:
-        lbsz = gbsz // nranks
+    for gbsz in shape0 * 3 + shape1 * 7:
+        lbsz = gbsz // nranks // msteps
         # last rank would contain more data
         start_idx = rank * lbsz
         end_idx = (rank + 1) * lbsz
@@ -407,6 +481,7 @@ def slove_static():
             lbsz += gbsz % nranks
             end_idx += gbsz % nranks
         label_partition_meta.append((lbsz, start_idx, end_idx))   
+
     main_program = paddle.static.Program()
     startup_program = paddle.static.Program()
 
@@ -417,6 +492,7 @@ def slove_static():
         outputs_var = []
 
         # inputs
+        inputs_size = 0
         for i in range(len(inputs)):
             #inputs
             # data parallel partition data 
@@ -428,6 +504,9 @@ def slove_static():
                 dtype='float32')
             input.stop_gradient = False
             inputs_var.append(input)
+            print("input shape:", shape_)
+            inputs_size += shape_[0]
+        print("inputs_size:", inputs_size)
 
         # labels
         for i in range(len(labels)):
@@ -445,6 +524,7 @@ def slove_static():
                 dtype='float32')
             label.stop_gradient = False
             labels_var.append(label)
+            print("label shape:", shape)
 
         for var in inputs_var:
             ret = algo.net.nn_func(var)
@@ -485,15 +565,15 @@ def slove_static():
         total_loss = paddle.sqrt(bc_loss + output_var_0_eq_loss +
                                  output_var_4_eq_loss + data_loss)
         opt_ops, param_grads = paddle.optimizer.Adam(0.001).minimize(total_loss)
-        debug_program(main_program, "./prim_program.txt.")
+        # debug_program(main_program, "./prim_program.txt.")
 
         if prim_enabled():
             if nranks > 1:
                 main_program, startup_program, dist_params_grads = get_dist_prog(main_program, startup_program, param_grads)
-                debug_program(main_program, "./auto_parallel_program.txt.")
+                # debug_program(main_program, "./auto_parallel_program.txt.")
             with paddle.static.program_guard(main_program, startup_program):
                 prim2orig(main_program.block(0))
-        debug_program(main_program, "./orign_program.txt.")
+        # debug_program(main_program, "./orign_program.txt.")
 
     gpu_id = int(os.environ.get('FLAGS_selected_gpus', 0))
     place = paddle.CUDAPlace(gpu_id)
@@ -501,13 +581,7 @@ def slove_static():
 
     feeds = dict()
     for i in range(len(inputs)):
-        # data parallel partition data
-        if nranks > 1:
-            start = input_partition_meta[i][1]
-            end = input_partition_meta[i][2]
-            feeds['input' + str(i)] = inputs[i][start: end]            
-        else:
-            feeds['input' + str(i)] = inputs[i]
+        feeds['input' + str(i)] = np.split(inputs[i], nranks)[rank]
 
     fetches = [total_loss.name]
     for var in outputs_var:
@@ -515,14 +589,15 @@ def slove_static():
 
     main_program = compile_and_convert_back_to_program(
         main_program, feed=feeds, fetch_list=fetches, use_prune=True)
-    debug_program(main_program, "./compiled_converted_program.txt.")
+    # debug_program(main_program, "./compiled_converted_program.txt.")
 
     # gradient merge
-    apply_gradient_merge_pass(main_program, startup_program, param_grads, k_step = 16, allreduce_in_update = True)
+    if msteps > 1:
+        apply_gradient_merge_pass(main_program, startup_program, param_grads, k_step = msteps, allreduce_in_update = True)
 
     exe.run(startup_program)
     # num_epoch in train
-    train_epoch = 150
+    train_epoch = 2000
 
     # Solver time: (100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
     num_time_step = 1
@@ -542,24 +617,27 @@ def slove_static():
             labels_attr,
             GetRealPhyInfo(
                 next_time, need_physic=True))
+
         for j in range(len(self_lables)):
-            if nranks > 1:
-                start = label_partition_meta[j][1]
-                end = label_partition_meta[j][2]
-                feeds['label' + str(j)] = self_lables[j][start: end]            
-            else:    
-                feeds['label' + str(j)] = self_lables[j]
-            # feeds['label' + str(j)] = self_lables[j]
+            self_label = _padding_array(self_lables[j], nranks)
+            feeds['label' + str(j)] = np.split(self_label, nranks)[rank]
+
+        for name, feed in feeds.items():
+            feeds[name] = np.split(_padding_array(feed, msteps), msteps)[0]
+            print(feeds[name].shape)
 
         for k in range(train_epoch):
-            if  k == 49 :
-                start_time = time.time()
-            if k == 149:
-                duration = time.time() - start_time
-                print("avg time from 50 - 150 epoch is {}".format(duration / 100.0))
-            out = exe.run(main_program, feed=feeds, fetch_list=fetches)
-            
-            print("autograd epoch: " + str(k + 1), "    loss:", out[0])
+            if  k == 49:
+                s_time = time.time()
+            if k == 99:
+                duration = time.time() - s_time
+                print("avg time from 50 - 100 epoch is {}".format(duration / 50))
+
+            b_time = time.time()
+            for i in range(msteps):
+                print("==>msteps:", i)
+                out = exe.run(main_program, feed=feeds, fetch_list=fetches)
+            print("autograd epoch: " + str(k + 1), "    loss:", out[0], "      speed:", time.time() - b_time)
         next_uvwp = out[1:]
         # # Save vtk
         # file_path = "train_flow_unsteady_re200/fac3d_train_rslt_" + str(next_time)
